@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core.data_draw_6d import DRAW_FILE, add_draw, load_draws, scrape_latest
+from core.data_draw_6d import DRAW_FILE, add_draw, load_draws, update_from_official_source
 from core.formula_break_6d import DEFAULT_RANK_RANGE, DEFAULT_RECENT_N, predict_top10
 
 st.set_page_config(page_title="Breakcode6D — Toto 6D", page_icon="🎯", layout="wide")
@@ -58,7 +58,7 @@ with tab_dash:
         last_draw = draws[-1]
         m1, m2 = st.columns(2)
         m1.metric("Jumlah Draw Direkod", len(draws))
-        m2.metric("Draw Terkini", f"{last_draw['date']} — {last_draw['number']}")
+        m2.metric("Draw Terkini", f"{last_draw['date']} — {last_draw['number']} (Draw {last_draw['draw_no']})")
 
         divider()
         section_title("🔮", "Tetapan Base", "Digit paling kerap setiap posisi (P1–P6).")
@@ -116,16 +116,14 @@ with tab_data:
                 st.error(msg)
 
     with d2:
-        st.markdown("**📥 Kemas Kini Automatik**")
+        st.markdown("**📥 Kemas Kini Data Rasmi**")
         st.caption(
-            "Cuba tarik keputusan TOTO 6D dari sportstoto.com.my (perlu sambungan "
-            "internet; laman kadang menyekat capaian automatik — kalau gagal, "
-            "tambah manual di sebelah)."
+            "Muat turun fail sejarah PENUH terus dari rst.sportstoto.com.my/upload/6D.zip "
+            "(perlu sambungan internet) — menggantikan draws6d.txt dgn versi rasmi terkini."
         )
-        months_back = st.slider("Bilangan bulan ke belakang:", 1, 12, 3, key="scrape_months_6d")
-        if st.button("Kemas Kini Draw", key="scrape_btn_6d"):
-            with st.spinner("Menarik data..."):
-                msg = scrape_latest(months_back=months_back)
+        if st.button("⬇️ Muat Turun Data Rasmi Terkini", key="update_btn_6d"):
+            with st.spinner("Memuat turun & mengurai fail rasmi..."):
+                msg = update_from_official_source()
             st.info(msg)
             st.rerun()
 
