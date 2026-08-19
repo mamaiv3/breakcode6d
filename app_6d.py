@@ -91,11 +91,21 @@ with tab_dash:
             )
             st.dataframe(pd.DataFrame(top_results), use_container_width=True, hide_index=True)
 
+            lot = st.text_input("Saiz Lot:", value="0.10", key="lot_6d")
+
             top_text = "\n".join(r["Nombor"] for r in top_results)
             st.code(top_text, language="text")
             st.download_button(
                 "💾 Muat Turun Top 10", data=top_text.encode(),
                 file_name="toto6d_top10.txt", mime="text/plain", key="dl_top10_6d",
+            )
+
+            st.markdown(f"**📋 Top 10 (format lot — `NNNNNN#{lot}`):**")
+            top_lot_text = "\n".join(f"{r['Nombor']}#{lot}" for r in top_results)
+            st.code(top_lot_text, language="text")
+            st.download_button(
+                "💾 Muat Turun Top 10 (format lot)", data=top_lot_text.encode(),
+                file_name="toto6d_top10_lot.txt", mime="text/plain", key="dl_top10_lot_6d",
             )
 
 # =================================================================== BACKTEST ===
