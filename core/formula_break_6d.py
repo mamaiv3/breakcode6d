@@ -96,3 +96,107 @@ def predict_top10(
         for i, (num, score) in enumerate(scored[:top_n])
     ]
     return base, top_results
+
+
+def backtest_rank_range(
+    draws: list[dict],
+    rank_range_candidates: list[tuple[int, int]],
+    recent_n: int = DEFAULT_RECENT_N,
+    score_recent_n: int | None = None,
+    top_n: int = 10,
+    rounds: int = 100,
+    max_pool_size: int = 500_000,
+) -> list[dict]:
+    """
+    Backtest EMPIRIKAL untuk cari "Julat Rank Digit" TERBAIK. Bagi SETIAP
+    calon rank_range, base dijana SEMULA bagi setiap draw diuji guna
+    HANYA draw SEBELUM draw tersebut ("as of" — tiada bocor maklumat
+    masa depan, sama prinsip backtest dlm formula_break.py 4D).
+
+    Bagi draw yang base-nya match PENUH (6/6 digit sebenar wujud dlm
+    base — syarat perlu sebelum Top-N pun berpeluang tangkap nombor
+    tu), semak sama ada nombor SEBENAR muncul dlm Top-N. Turut kira
+    baseline rawak tulen (top_n ÷ saiz kolam) sbg perbandingan adil.
+
+    PENTING utk 6D: berbanding 4D (4 posisi), keperluan "base penuh"
+    jauh lebih ketat sebab 6 posisi kena betul SEKALI GUS — julat
+    sempit (cth R1-R2) brtsy hampir MUSTAHIL diuji sebab peluang base
+    penuh boleh serendah 0.006% (~1 kali dlm 15,000 draw). Kalau
+    keputusan tunjuk "Base Penuh: 0", cuba julat lebih luas atau
+    tambah bilangan draw diuji.
+
+    Calon dgn kolam kombinasi > `max_pool_size` dilangkau (elak
+    backtest jadi terlalu perlahan).
+    """
+    results = []
+    for rank_range in rank_range_candidates:
+        hits = 0
+        base_full = 0
+        baseline_probs = []
+        score_recent_n_eff = score_recent_n or recent_n
+
+        for i in range(1, rounds + 1):
+            test_draw = draws[-i]
+            past = draws[:-i]
+            if len(past) < recent_n:
+                break
+            try:
+                base = generate_break_base(past, recent_n, rank_range)
+            except ValueError:
+                continue
+
+            pool_size = 1
+            for p in base:
+                pool_size *= len(p)
+            if pool_size > max_pool_size:
+                continue
+
+            actual = f"{int(test_draw['number']):06d}"
+            if not all(check_against_base(actual, base)):
+                continue  # base tak cover penuh -- tak adil banding dgn baseline "given in pool"
+
+            recent = past[-score_recent_n_eff:] if past else []
+            counters = [Counter() for _ in range(NUM_POSITIONS)]
+            for d in recent:
+                num = f"{int(d['number']):06d}"
+                for j in range(NUM_POSITIONS):
+                    counters[j][num[j]] += 1
+
+            scored = []
+            for combo in itertools.product(*base):
+                score = sum(counters[j][combo[j]] for j in range(NUM_POSITIONS))
+                scored.append(("".join(combo), score))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            top_nums = {num for num, _ in scored[:top_n]}
+
+            base_full += 1
+            baseline_probs.append(min(top_n, pool_size) / pool_size)
+            if actual in top_nums:
+                hits += 1
+
+        if base_full == 0:
+            results.append({
+                "Julat": f"R{rank_range[0]}-R{rank_range[1]}",
+                "rank_range": rank_range,
+                "Base Penuh": 0,
+                "Masuk Top-N": 0,
+                "Recall (%)": None,
+                "Baseline Rawak (%)": None,
+                "Kelebihan vs Rawak": None,
+            })
+            continue
+
+        recall_rate = round(hits / base_full * 100, 2)
+        baseline_rate = round(sum(baseline_probs) / len(baseline_probs) * 100, 2)
+        results.append({
+            "Julat": f"R{rank_range[0]}-R{rank_range[1]}",
+            "rank_range": rank_range,
+            "Base Penuh": base_full,
+            "Masuk Top-N": hits,
+            "Recall (%)": recall_rate,
+            "Baseline Rawak (%)": baseline_rate,
+            "Kelebihan vs Rawak": round(recall_rate - baseline_rate, 2),
+        })
+
+    results.sort(key=lambda r: (r["Kelebihan vs Rawak"] is not None, r["Kelebihan vs Rawak"]), reverse=True)
+    return results
