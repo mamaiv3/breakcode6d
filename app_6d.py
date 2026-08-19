@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from core.data_draw_6d import DRAW_FILE, add_draw, load_draws, update_from_official_source
-from core.formula_break_6d import DEFAULT_RANK_RANGE, DEFAULT_RECENT_N, predict_top10
+from core.formula_break_6d import DEFAULT_RANK_RANGE, DEFAULT_RECENT_N, backtest_rank_range, predict_top10
 
 st.set_page_config(page_title="Breakcode6D — Toto 6D", page_icon="🎯", layout="wide")
 
@@ -48,7 +48,7 @@ st.caption(
 
 draws = load_draws()
 
-tab_dash, tab_data = st.tabs(["📊 Dashboard", "📋 Data"])
+tab_dash, tab_backtest, tab_data = st.tabs(["📊 Dashboard", "🔬 Backtest", "📋 Data"])
 
 # =================================================================== DASHBOARD ===
 with tab_dash:
@@ -97,6 +97,93 @@ with tab_dash:
                 "💾 Muat Turun Top 10", data=top_text.encode(),
                 file_name="toto6d_top10.txt", mime="text/plain", key="dl_top10_6d",
             )
+
+# =================================================================== BACKTEST ===
+with tab_backtest:
+    section_title(
+        "🔬", "Backtest — Cari Julat Rank Terbaik",
+        "Uji beberapa \"Julat Rank Digit\" terhadap draw lepas (\"as of\" — tiada bocor maklumat masa depan).",
+    )
+
+    if len(draws) < 50:
+        st.warning("⚠️ Data draw terlalu sedikit (<50) untuk backtest bermakna.")
+    else:
+        st.info(
+            "⚠️ **Had penting untuk 6D:** kolam kombinasi (cth R1-R8 = 262,144) jauh lebih besar drpd "
+            "Top-N (10) — baseline rawak sendiri boleh serendah 0.004%. Ini bermakna \"Masuk Top-N\" "
+            "hampir mustahil diperhatikan dlm backtest walaupun dgn ratusan sampel base-penuh — bukan "
+            "salah julat atau bug, tapi had matematik skala 6D. Anggap lajur **\"Base Penuh\"** (peratus "
+            "julat berjaya cover digit sebenar) sbg penunjuk lebih berguna drpd \"Kelebihan vs Rawak\" "
+            "buat masa ini."
+        )
+        bt1, bt2 = st.columns(2)
+        bt_recent_n = bt1.slider(
+            "N (draw terkini utk base):", 10, len(draws), min(DEFAULT_RECENT_N, len(draws)), 5, key="bt_recent_n_6d",
+        )
+        bt_top_n = bt2.selectbox(
+            "Top-N untuk diuji:", [5, 10, 20, 30, 50], index=1, key="bt_top_n_6d",
+        )
+
+        julat_options = {f"R1-R{k}": (1, k) for k in range(2, 9)}
+        chosen_julat = st.multiselect(
+            "Julat rank untuk dibandingkan:", list(julat_options.keys()),
+            default=["R1-R5", "R1-R6", "R1-R7", "R1-R8"], key="bt_julat_6d",
+        )
+        st.caption(
+            "ℹ️ Julat sempit (R1-R2/R1-R3) hampir mustahil diuji utk 6D — 6 posisi kena "
+            "betul SEKALI GUS, jadi peluang \"base penuh\" jadi sangat rendah. Julat lebar "
+            "(R1-R5 ke atas) lebih realistik utk backtest bermakna."
+        )
+
+        max_rounds = max(50, min(3000, len(draws) - bt_recent_n))
+        bt_rounds = st.slider(
+            "Bilangan draw lepas untuk diuji:", 50, max_rounds, min(1000, max_rounds), 50, key="bt_rounds_6d",
+        )
+
+        if st.button("🚀 Jalankan Backtest", key="bt_run_6d"):
+            if len(chosen_julat) < 2:
+                st.warning("⚠️ Pilih sekurang-kurangnya 2 julat untuk dibandingkan.")
+            else:
+                candidates = [julat_options[k] for k in chosen_julat]
+                with st.spinner("Menguji setiap julat terhadap draw lepas..."):
+                    bt_results = backtest_rank_range(
+                        draws, rank_range_candidates=candidates,
+                        recent_n=bt_recent_n, top_n=bt_top_n, rounds=bt_rounds,
+                    )
+                if not bt_results:
+                    st.warning("⚠️ Tiada julat berjaya diuji — cuba kurangkan N atau bilangan draw diuji.")
+                else:
+                    zero_julat = [r["Julat"] for r in bt_results if r["Base Penuh"] == 0]
+                    if zero_julat:
+                        st.caption(
+                            f"⚠️ {', '.join(zero_julat)} — 0 kali base penuh dlm ujian ni (julat terlalu "
+                            "sempit utk saiz sampel ni). Naikkan bilangan draw diuji atau lebarkan julat."
+                        )
+                    valid_results = [r for r in bt_results if r["Base Penuh"] > 0]
+                    if not valid_results:
+                        st.warning("⚠️ Semua julat dipilih tak pernah base penuh — lebarkan julat atau naikkan bilangan draw diuji.")
+                    else:
+                        sample_n = valid_results[0]["Base Penuh"]
+                        if sample_n < 30:
+                            st.caption(
+                                f"⚠️ Cuma {sample_n} sampel (base penuh) utk julat terbaik — naikkan "
+                                "\"Bilangan draw lepas untuk diuji\" utk keputusan yang lebih boleh dipercayai."
+                            )
+                        st.dataframe(
+                            pd.DataFrame(bt_results).drop(columns=["rank_range"]),
+                            use_container_width=True, hide_index=True,
+                        )
+                        winner = valid_results[0]
+                        if winner["Kelebihan vs Rawak"] > 0:
+                            st.success(
+                                f"🏆 **{winner['Julat']}** terdepan (+{winner['Kelebihan vs Rawak']} drpd rawak) — "
+                                "pergi ke tab Dashboard & tetapkan \"Julat rank digit\" ke nilai ni."
+                            )
+                        else:
+                            st.caption(
+                                "⚠️ Tiada julat pun mengatasi baseline rawak dlm ujian ini — draw 6D nampak "
+                                "konsisten dgn rawak tulen buat masa ini."
+                            )
 
 # =================================================================== DATA ===
 with tab_data:
