@@ -1,43 +1,62 @@
 """
 core/data_draw_6d.py
 ----------------------
-Pengurusan data draw 6D (Sports Toto 6D): baca, tambah secara manual, dan
-cuba kemas kini keputusan terkini secara automatik dari sportstoto.com.my.
+Pengurusan data draw 6D (Sports Toto 6D).
 
-Ini SATU-SATUNYA sumber data mentah yang digunakan oleh Dashboard 6D —
-dikekalkan berasingan drpd data_draw.py (4D) supaya senang diselenggara.
+Format fail data/draws6d.txt ikut format RASMI Sports Toto (CSV):
+    DrawNo,DrawDate,1stPrizeNo
+    040792,19920506,893424
+    ...
+- DrawNo    : nombor siri draw rasmi (cth "617226" = draw #6172, tahun '26)
+- DrawDate  : YYYYMMDD
+- 1stPrizeNo: nombor 1st Prize, 6 digit
 
-NOTA: results_statistics_6d.asp (laman "Statistics") TIDAK sesuai sbg
-sumber — ia senarai besar nombor pernah keluar SUSUN IKUT NOMBOR, bukan
-ikut tarikh. Scraper ni guna results_past.asp sebaliknya, yg ada tarikh
-draw sebenar bagi setiap keputusan.
+Fail ni serasi TERUS dengan muat turun rasmi drpd rst.sportstoto.com.my/upload/6D.zip
+-- untuk kemas kini, cukup panggil update_from_official_source() (atau guna
+butang "Muat Turun Data Rasmi" dlm tab Data), ATAU muat turun & ganti fail
+tu secara manual.
 """
 
+import csv
+import io
 import os
 import re
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+import zipfile
 
 DRAW_FILE = "data/draws6d.txt"
+OFFICIAL_6D_ZIP_URL = "https://rst.sportstoto.com.my/upload/6D.zip"
+CSV_HEADER = "DrawNo,DrawDate,1stPrizeNo"
 
 
 def load_draws(file_path: str = DRAW_FILE) -> list[dict]:
-    """Baca semua draw dari fail teks (format: 'YYYY-MM-DD NNNNNN' per baris)."""
+    """Baca semua draw dari fail CSV format rasmi (header 'DrawNo,DrawDate,1stPrizeNo').
+    Pulangkan list of dict {"draw_no", "date" (YYYY-MM-DD), "number"} tersusun ikut tarikh menaik."""
     if not os.path.exists(file_path):
         return []
+
     draws = []
-    with open(file_path, "r") as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) == 2 and re.match(r"^\d{6}$", parts[1]):
-                draws.append({"date": parts[0], "number": parts[1]})
+    with open(file_path, "r", newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) != 3:
+                continue
+            draw_no, draw_date, prize = (x.strip() for x in row)
+            if draw_no == "DrawNo":  # baris header
+                continue
+            if not re.match(r"^\d{8}$", draw_date) or not re.match(r"^\d{6}$", prize):
+                continue
+            date_str = f"{draw_date[0:4]}-{draw_date[4:6]}-{draw_date[6:8]}"
+            draws.append({"draw_no": draw_no, "date": date_str, "number": prize})
+
     return sorted(draws, key=lambda d: d["date"])
 
 
-def add_draw(date_str: str, number: str, file_path: str = DRAW_FILE) -> tuple[bool, str]:
-    """Tambah satu draw secara manual. Menolak tarikh/nombor tak sah atau pendua."""
+def add_draw(date_str: str, number: str, draw_no: str = "", file_path: str = DRAW_FILE) -> tuple[bool, str]:
+    """Tambah satu draw secara manual (format CSV rasmi). Menolak tarikh/nombor
+    tak sah atau pendua. `draw_no` pilihan (boleh dibiar kosong utk entri manual)."""
     date_str = date_str.strip()
     number = number.strip()
+    draw_no = draw_no.strip()
 
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return False, "❌ Format tarikh mesti YYYY-MM-DD."
@@ -48,105 +67,56 @@ def add_draw(date_str: str, number: str, file_path: str = DRAW_FILE) -> tuple[bo
     if any(d["date"] == date_str for d in draws):
         return False, f"⚠️ Draw untuk {date_str} sudah wujud."
 
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "a") as f:
-        f.write(f"{date_str} {number}\n")
+    yyyymmdd = date_str.replace("-", "")
+    file_exists = os.path.exists(file_path)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True) if os.path.dirname(file_path) else None
+
+    with open(file_path, "a", newline="\n") as f:
+        if not file_exists:
+            f.write(CSV_HEADER + "\n")
+        f.write(f"{draw_no},{yyyymmdd},{number}\n")
     return True, "✅ Draw berjaya ditambah."
 
 
-def _parse_6d_draws_from_text(text: str) -> list[tuple[str, str]]:
+def update_from_official_source(file_path: str = DRAW_FILE, url: str = OFFICIAL_6D_ZIP_URL) -> str:
     """
-    Urai teks rata (BeautifulSoup.get_text()) drpd results_past.asp,
-    pulangkan senarai (tarikh YYYY-MM-DD, nombor 6-digit).
+    Muat turun fail sejarah PENUH rasmi terus dari rst.sportstoto.com.my
+    (zip berisi 1 fail .txt, format CSV 'DrawNo,DrawDate,1stPrizeNo'), dan
+    GANTIKAN draws6d.txt sepenuhnya dgn versi rasmi terkini.
 
-    Pendekatan: cari setiap penanda "Draw Date : D/M/YYYY", ambil blok
-    teks sehingga penanda tarikh SETERUSNYA, dalam blok tu cari corak
-    "TOTO 6D ... 1st Prize ... NNNNNN". Cara ni tahan sikit drpd
-    perubahan kecil struktur HTML sebab tak bergantung pd nama
-    tag/class tertentu — tapi TETAP boleh rosak kalau susun-atur laman
-    berubah besar. Kalau scrape gagal, tambah draw secara manual.
-    """
-    results = []
-    date_matches = list(re.finditer(r"Draw Date\s*:\s*(\d{1,2})/(\d{1,2})/(\d{4})", text))
-    for idx, dm in enumerate(date_matches):
-        day, month, year = dm.groups()
-        start = dm.end()
-        end = date_matches[idx + 1].start() if idx + 1 < len(date_matches) else len(text)
-        block = text[start:end]
-        prize_match = re.search(r"TOTO\s*6D.*?1st\s*Prize\s*(\d{6})", block, re.S)
-        if prize_match:
-            try:
-                date_str = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
-            except ValueError:
-                continue
-            results.append((date_str, prize_match.group(1)))
-    return results
-
-
-def scrape_latest(file_path: str = DRAW_FILE, months_back: int = 3) -> str:
-    """
-    Cuba tarik keputusan TOTO 6D dari sportstoto.com.my/results_past.asp,
-    `months_back` bulan ke belakang drpd hari ini. Perlukan sambungan
-    internet semasa aplikasi ini dijalankan (streamlit run).
-
-    NOTA: laman ni kadang menyekat trafik automatik (bot detection).
-    Kalau gagal berulang kali, tambah draw secara manual di bawah.
+    Jauh lebih boleh dipercayai drpd scrape HTML halaman results_past.asp
+    (tiada isu bot-detection sebab ini muat turun fail bulk terus), tapi
+    tetap perlukan sambungan internet semasa aplikasi dijalankan.
     """
     try:
         import requests
-        from bs4 import BeautifulSoup
     except ImportError:
-        return "⚠️ Modul 'requests' / 'beautifulsoup4' tiada. Sila tambah draw secara manual."
+        return "⚠️ Modul 'requests' tiada. Sila muat turun & ganti fail secara manual."
+
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"⚠️ Gagal muat turun fail rasmi ({e}). Cuba lagi, atau muat turun & ganti fail secara manual."
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            txt_names = [n for n in zf.namelist() if n.lower().endswith(".txt")]
+            if not txt_names:
+                return "⚠️ Fail .txt tidak dijumpai dlm zip rasmi — struktur mungkin berubah."
+            raw = zf.read(txt_names[0]).decode("utf-8", errors="ignore")
+    except Exception as e:
+        return f"⚠️ Gagal buka fail zip ({e})."
+
+    lines = raw.replace("\r\n", "\n").strip().split("\n")
+    if not lines or not lines[0].startswith("DrawNo"):
+        return "⚠️ Format fail rasmi tidak dikenali (dijangka header 'DrawNo,DrawDate,1stPrizeNo') — struktur mungkin berubah."
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True) if os.path.dirname(file_path) else None
+    with open(file_path, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
 
     draws = load_draws(file_path)
-    existing = {d["date"] for d in draws}
-
-    tz = ZoneInfo("Asia/Kuala_Lumpur")
-    cursor = datetime.now(tz).date()
-
-    session = requests.Session()
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        )
-    }
-
-    added = []
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    blocked = False
-
-    with open(file_path, "a") as f:
-        for _ in range(max(1, months_back)):
-            url = (
-                "https://www.sportstoto.com.my/results_past.asp"
-                f"?date={cursor.month}/{cursor.day}/{cursor.year}"
-            )
-            try:
-                resp = session.get(url, headers=headers, timeout=15)
-                if resp.status_code != 200:
-                    blocked = True
-                    break
-                soup = BeautifulSoup(resp.text, "html.parser")
-                text = soup.get_text(separator=" ")
-            except Exception:
-                blocked = True
-                break
-
-            for date_str, number in _parse_6d_draws_from_text(text):
-                if date_str in existing:
-                    continue
-                f.write(f"{date_str} {number}\n")
-                existing.add(date_str)
-                added.append(date_str)
-
-            # bulan sebelumnya
-            first_of_month = cursor.replace(day=1)
-            cursor = first_of_month - timedelta(days=1)
-
-    if added:
-        added.sort()
-        return f"✔️ {len(added)} draw baru ditambah ({added[0]} → {added[-1]})."
-    if blocked:
-        return "⚠️ Laman menyekat capaian automatik (bot detection) atau tiada sambungan — sila tambah manual."
-    return "ℹ️ Tiada draw baru ditemui buat masa ini."
+    if not draws:
+        return "⚠️ Fail dimuat turun tapi tiada draw sah diurai — sila semak fail secara manual."
+    return f"✔️ Fail rasmi berjaya dimuat turun & disimpan — {len(draws)} draw ({draws[0]['date']} → {draws[-1]['date']})."
